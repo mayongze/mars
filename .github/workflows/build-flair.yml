@@ -1,0 +1,65 @@
+name: Build Mars for FLAIR signatures
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16.2
+        run: |
+          # List available Xcode versions
+          ls /Applications/ | grep Xcode
+          # Use Xcode 16.2
+          sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+          xcodebuild -version
+          clang --version
+
+      - name: Build Mars (arm64, -Os, no LTO)
+        run: |
+          cd mars
+          mkdir -p cmake_build/OSX && cd cmake_build/OSX
+
+          cmake ../.. \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-Os -fno-lto" \
+            -DCMAKE_CXX_FLAGS="-Os -fno-lto -fno-exceptions -std=gnu++14 -stdlib=libc++" \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
+
+          make -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
+
+          echo "=== Build artifacts ==="
+          find . -name "*.a" -exec ls -lh {} \;
+
+      - name: Generate FLAIR patterns with pmacho
+        run: |
+          # Download IDA FLAIR tools (pmacho + sigmake)
+          # We'll use pmacho from the build artifacts
+          # For now, just package the .o files for local processing
+          echo "Packaging .o files..."
+
+          cd mars/cmake_build/OSX
+          mkdir -p /tmp/mars_objects
+
+          # Copy all .o files preserving directory structure
+          for lib_dir in comm stn sdt app boot xlog; do
+            find "$lib_dir" -name "*.o" -exec cp {} /tmp/mars_objects/ \;
+          done
+
+          # Also copy the .a static libraries
+          find . -name "*.a" -exec cp {} /tmp/mars_objects/ \;
+
+          ls -lh /tmp/mars_objects/ | head -20
+          echo "Total .o files: $(ls /tmp/mars_objects/*.o 2>/dev/null | wc -l)"
+          echo "Total .a files: $(ls /tmp/mars_objects/*.a 2>/dev/null | wc -l)"
+
+      - name: Upload .o artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mars-objects-xcode16.2
+          path: /tmp/mars_objects/
+          retention-days: 7
